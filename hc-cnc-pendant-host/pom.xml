@@ -4,7 +4,7 @@
 
   <groupId>com.hedgecourt</groupId>
   <artifactId>hcPendant</artifactId>
-  <version>0.0.1-SNAPSHOT</version>
+  <version>0.3</version>
   <packaging>jar</packaging>
 
   <name>hcPendant</name>
@@ -46,6 +46,7 @@
    <plugin>
     <groupId>org.apache.maven.plugins</groupId>
     <artifactId>maven-shade-plugin</artifactId>
+    <version>3.1.0</version>
     <executions>
         <execution>
             <goals>
@@ -54,10 +55,19 @@
             <configuration>
                 <shadedArtifactAttached>true</shadedArtifactAttached>
                 <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <manifestEntries>
+                    <Main-Class>com.hedgecourt.cncpendant.CncPendant</Main-Class>
+                    <Class-Path>config .</Class-Path>
+                    <Build-Number>123</Build-Number>
+                  </manifestEntries>
+                </transformer>
+<!--                 
                     <transformer implementation=
                       "org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                        <mainClass>com.hedgecourt.ugspendant.UgsPendant</mainClass>
+                        <mainClass>com.hedgecourt.cncpendant.CncPendant</mainClass>
                 </transformer>
+ -->
             </transformers>
         </configuration>
         </execution>

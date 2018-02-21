@@ -1,4 +1,4 @@
-package com.hedgecourt.ugspendant;
+package com.hedgecourt.cncpendant;
 
 public class PendantDataPacket {
 
