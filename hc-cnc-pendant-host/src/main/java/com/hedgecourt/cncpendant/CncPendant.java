@@ -1,4 +1,4 @@
-package com.hedgecourt.ugspendant;
+package com.hedgecourt.cncpendant;
 
 import java.io.IOException;
 import java.net.URI;
@@ -22,7 +22,7 @@ import com.fazecast.jSerialComm.SerialPort;
 import com.fazecast.jSerialComm.SerialPortDataListener;
 import com.fazecast.jSerialComm.SerialPortEvent;
 
-public class UgsPendant implements SerialPortDataListener {
+public class CncPendant implements SerialPortDataListener {
 
     private PendantCtrl pendantCtrl = null;
 
@@ -34,19 +34,19 @@ public class UgsPendant implements SerialPortDataListener {
     public static void main(String[] args) {
 
         if (args.length < 1) {
-            UgsPendant.printUsage();
+            CncPendant.printUsage();
             System.exit(1);
         }
 
         if (args[0].equalsIgnoreCase("list")) {
-            listCommPorts();
+            CncPendant.listCommPorts();
             System.exit(0);
         }
 
         PendantCtrl pendantCtrl = new PendantCtrl();
         try {
             pendantCtrl.init();
-        } catch (UgsPendantException E) {
+        } catch (CncPendantException E) {
             System.err.println("Failed initializing controller: " + E.getMessage());
             E.printStackTrace();
             System.exit(1);
@@ -60,16 +60,16 @@ public class UgsPendant implements SerialPortDataListener {
         }
 
         if (args[0].equalsIgnoreCase("start")) {
-            System.out.println("UgsPendant - starting comm server");
+            CncPendant.log("starting comm server");
 
             if (args.length < 2) {
-                UgsPendant.printUsage();
+                CncPendant.printUsage();
                 System.err.println("start requires COMM_PORT");
                 System.exit(1);
             }
 
-            UgsPendant ugsPendant = new UgsPendant(pendantCtrl, args[1]);
-            ugsPendant.doIt();
+            CncPendant cncPendant = new CncPendant(pendantCtrl, args[1]);
+            cncPendant.doIt();
 
             System.exit(0);
         }
@@ -77,17 +77,19 @@ public class UgsPendant implements SerialPortDataListener {
     }
 
     public static void printUsage() {
-        System.out.println("usage: UgsPendant [list | stop | start COMM_PORT]\n");
+        System.out.println("usage: CncPendant [list | stop | start COMM_PORT]\n");
+        System.out.println("\t-Dgcode.sender=[ugs|bcnc]");
+        CncPendant.listCommPorts();
     }
 
-    public UgsPendant(PendantCtrl pendantCtrl, String commPort) {
+    public CncPendant(PendantCtrl pendantCtrl, String commPort) {
         super();
         this.setPendantCtrl(pendantCtrl);
         this.setPortName(commPort);
     }
 
     public void doIt() {
-        Runtime.getRuntime().addShutdownHook(new UgsPendantShutdownThread());
+        Runtime.getRuntime().addShutdownHook(new CncPendantShutdownThread());
 
         new Thread() {
             @Override
@@ -96,35 +98,36 @@ public class UgsPendant implements SerialPortDataListener {
             }
         }.start();
 
-        UgsPendant.listCommPorts();
+        CncPendant.listCommPorts();
 
-        System.out.println("\nUgsPendant - looking for serial port [" + this.getPortName() + "]");
+        CncPendant.logNewLine();
+        CncPendant.log("looking for serial port [" + this.getPortName() + "]");
 
         this.setSerialPort(SerialPort.getCommPort(this.getPortName()));
         if (this.getSerialPort() == null) {
-            System.out.println("UgsPendant - serial port is null, exiting.");
+            CncPendant.log("serial port is null, exiting.");
             System.exit(1);
         }
 
         if (!this.getSerialPort().openPort()) {
             // failed opening
-            System.out.println("UgsPendant - failed opening serial port, exiting.");
+            CncPendant.log("failed opening serial port, exiting.");
             System.exit(1);
         }
 
         this.getSerialPort().addDataListener(this);
 
-        System.out.println("UgsPendant - successfully opened serial port.\n");
+        CncPendant.log("successfully opened serial port.\n");
 
         while (!this.getPendantCtrl().isShuttingDown()) {
 
             if (this.getSerialPort() == null || !this.getSerialPort().isOpen()) {
-                System.out.println("UgsPendant - serial port is not open, exiting.");
+                CncPendant.log("serial port is not open, exiting.");
                 this.getPendantCtrl().setShuttingDown(true);
             } else {
 
                 if (Boolean.parseBoolean(this.getProperty("verbose.heartbeat"))) {
-                    System.out.println("UgsPendant - thread heartbeat");
+                    CncPendant.log("thread heartbeat");
                 }
 
                 try {
@@ -144,7 +147,7 @@ public class UgsPendant implements SerialPortDataListener {
             }
         }
 
-        System.out.println("UgsPendant - shutdown received OR port closed (disconnect), exiting.");
+        CncPendant.log("shutdown received OR port closed (disconnect), exiting.");
 
     }
 
@@ -160,13 +163,13 @@ public class UgsPendant implements SerialPortDataListener {
         }
         byte[] newData = new byte[this.serialPort.bytesAvailable()];
         int numRead = this.serialPort.readBytes(newData, newData.length);
-        System.out.println("UgsPendant - incoming serial data: numBytes=" + numRead);
+        CncPendant.log("incoming serial data: numBytes=" + numRead);
 
         if (numRead == 1) {
 
             // gotta "& 0xFF" because java hates unsigned bytes
             if ((newData[0] & 0xFF) == Integer.decode(this.getProperty("serial.protocol.byte.stop"))) {
-                System.out.println("\treceived shutdown command via serial");
+                CncPendant.log("received shutdown command via serial", true);
                 this.getPendantCtrl().setShuttingDown(true);
             } else {
                 PendantDataPacket p = new PendantDataPacket(this.getPendantCtrl(), newData);
@@ -174,46 +177,70 @@ public class UgsPendant implements SerialPortDataListener {
                 String gCode = this.getGcodeForButton(p);
 
                 if (p.getButtonNumber() < 6) {
-                    System.out.println("\treceived axis jog button [" + p.toString() + "] [" + gCode + "]");
+                    CncPendant.log("received axis jog button [" + p.toString() + "] [" + gCode + "]", true);
                 } else {
-                    System.out.println("\treceived direct gcode button [" + p.toString() + "] [" + gCode + "]");
+                    CncPendant.log("received direct gcode button [" + p.toString() + "] [" + gCode + "]", true);
                 }
 
-                // now send the gcode to the Ugs Pendant webserver
+                // convert gCode separator to the value required by the sender
+                if (gCode != null && !this.getProperty("gcode.separator.default").equals(this.getGcodeSenderProperty("gcode.separator"))) {
+                    gCode = gCode.replaceAll(this.getProperty("gcode.separator.default"), this.getGcodeSenderProperty("gcode.separator"));
+                }
+
+                // now send the gcode to the Gcode Sender Pendant webserver
                 if (!Boolean.valueOf(System.getProperty("hcPendant.suppress.http", "false"))) {
 
                     /*
                      * after a certain amount of idle time (and first time through), we need to visit
-                     * the index page of the UGS Pendant UI webserver
+                     * the index page of the Cnc Pendant UI webserver (important for first visit to UGS after it starts up)
                      */
-                    if ((System.currentTimeMillis() - this.getLastIndexVisitMillis()) > (Long.parseLong(this.getProperty("ugs.index.visit.seconds")) * 1000)) {
-                        System.out.println("\tvisiting UGS index page");
-                        this.visitUgsUrl(this.getProperty("ugs.url.index"), Boolean.parseBoolean(this.getProperty("ugs.index.outputResponse")));
+                    long indexIntervalMillis = Long.parseLong(this.getGcodeSenderProperty("index.visit.seconds")) * 1000;
+
+                    if ((indexIntervalMillis > 0) && (System.currentTimeMillis() - this.getLastIndexVisitMillis()) > indexIntervalMillis) {
+
+                        CncPendant.log("visiting Web UI index page", true);
+                        this.visitWebUI(this.getGcodeSenderProperty("index.url"), Boolean.parseBoolean(this.getGcodeSenderProperty("index.outputResponse")));
                         this.setLastIndexVisitMillis(System.currentTimeMillis());
                     }
 
                     // build the query parameter with the gCode
                     List<NameValuePair> queryParms = new ArrayList<>();
-                    queryParms.add(new BasicNameValuePair("gCode", gCode));
+                    queryParms.add(new BasicNameValuePair(this.getGcodeSenderProperty("gcode.paramName"), gCode));
 
-                    System.out.println("\tvisiting UGS gcode page");
-                    this.visitUgsUrl(this.getProperty("ugs.url.gcode"), Boolean.parseBoolean(this.getProperty("ugs.gcode.outputResponse")), queryParms);
+                    CncPendant.log("visiting Web UI gcode page", true);
+                    this.visitWebUI(this.getGcodeSenderProperty("gcode.url"), Boolean.parseBoolean(this.getGcodeSenderProperty("gcode.outputResponse")), queryParms);
 
                     // blank line to make the console a bit easier on the eyes
-                    System.out.println("");
+                    CncPendant.logNewLine();
 
                 }
             }
         } else {
-            System.out.println("\treceived more than 1 byte, skipping packet.");
+            CncPendant.log("received more than 1 byte, skipping packet.", true);
         }
     }
 
-    public void visitUgsUrl(String requestUrl, boolean outputResponse) {
-        this.visitUgsUrl(requestUrl, outputResponse, null);
+    public static void log(String msg) {
+        CncPendant.log(msg, false);
     }
 
-    public void visitUgsUrl(String requestUrl, boolean outputResponse, List<NameValuePair> queryParms) {
+    public static void log(String msg, boolean wantIndent) {
+        if (wantIndent) {
+            System.out.println("\t" + msg);
+        } else {
+            System.out.println("CncPendant - " + msg);
+        }
+    }
+
+    public static void logNewLine() {
+        System.out.println("");
+    }
+
+    public void visitWebUI(String requestUrl, boolean outputResponse) {
+        this.visitWebUI(requestUrl, outputResponse, null);
+    }
+
+    public void visitWebUI(String requestUrl, boolean outputResponse, List<NameValuePair> queryParms) {
         CloseableHttpClient browser = HttpClients.createDefault();
         try {
             HttpGet getRequest = new HttpGet(requestUrl);
@@ -223,7 +250,7 @@ public class UgsPendant implements SerialPortDataListener {
                 getRequest.setURI(uri);
             }
 
-            System.out.println("\turi [" + getRequest.getURI().toString() + "]");
+            CncPendant.log("uri [" + getRequest.getURI().toString() + "]", true);
 
             ResponseHandler<String> respHandler = new ResponseHandler<String>() {
                 @Override
@@ -248,7 +275,7 @@ public class UgsPendant implements SerialPortDataListener {
             }
 
         } catch (Exception E) {
-            System.err.println("failed sending request to ugs pendant webserver: " + E.getMessage());
+            System.err.println("failed sending request to Web UI pendant webserver: " + E.getMessage());
             E.printStackTrace();
         } finally {
             try {
@@ -262,19 +289,20 @@ public class UgsPendant implements SerialPortDataListener {
     }
 
     public String getGcodeForButton(PendantDataPacket p) {
+        String gCode = null;
         if (p.getButtonNumber() < 6) {
 
-            String buf = this.getProperty("jog.gcode.pattern");
-            buf = buf.replaceAll("\\[JOG_UNIT\\]", p.getJogUnit());
-            buf = buf.replaceAll("\\[JOG_AXIS\\]", this.getProperty("button." + p.getButtonNumber() + ".axis"));
-            buf = buf.replaceAll("\\[JOG_DIR\\]", this.getProperty("button." + p.getButtonNumber() + ".dir"));
-            buf = buf.replaceAll("\\[JOG_SIZE\\]", p.getJogSize());
+            gCode = this.getProperty("jog.gcode.pattern");
+            gCode = gCode.replaceAll("\\[JOG_UNIT\\]", p.getJogUnit());
+            gCode = gCode.replaceAll("\\[JOG_AXIS\\]", this.getProperty("button." + p.getButtonNumber() + ".axis"));
+            gCode = gCode.replaceAll("\\[JOG_DIR\\]", this.getProperty("button." + p.getButtonNumber() + ".dir"));
+            gCode = gCode.replaceAll("\\[JOG_SIZE\\]", p.getJogSize());
 
-            return buf;
         } else {
-            return this.getProperty("button." + p.getButtonNumber() + ".gcode");
+            gCode = this.getProperty("button." + p.getButtonNumber() + ".gcode");
         }
 
+        return gCode;
     }
 
     public static void listCommPorts() {
@@ -317,6 +345,10 @@ public class UgsPendant implements SerialPortDataListener {
         return this.getProperties().getProperty(key);
     }
 
+    public String getGcodeSenderProperty(String key) {
+        return this.getPendantCtrl().getGcodeSenderProperty(key);
+    }
+
     public long getLastIndexVisitMillis() {
         return lastIndexVisitMillis;
     }
@@ -331,14 +363,15 @@ public class UgsPendant implements SerialPortDataListener {
      * @author bumblebee
      *
      */
-    private class UgsPendantShutdownThread extends Thread {
-        public UgsPendantShutdownThread() {
+    private class CncPendantShutdownThread extends Thread {
+        public CncPendantShutdownThread() {
             super();
         }
 
         @Override
         public void run() {
-            System.out.println("\nUgsPendant - begin shutdown...");
+            CncPendant.logNewLine();
+            CncPendant.log("CncPendant - begin shutdown...");
 
             if (!getPendantCtrl().isShuttingDown()) {
                 // in case the rest of the system doesnt know we're shutting down
@@ -346,11 +379,11 @@ public class UgsPendant implements SerialPortDataListener {
             }
 
             if (getSerialPort() != null && getSerialPort().isOpen()) {
-                System.out.println("UgsPendant - closing serial port [" + getSerialPort().getSystemPortName() + "] [" + getSerialPort().getDescriptivePortName() + "]");
+                CncPendant.log("closing serial port [" + getSerialPort().getSystemPortName() + "] [" + getSerialPort().getDescriptivePortName() + "]");
                 getSerialPort().closePort();
             }
 
-            System.out.println("UgsPendant - end shutdown. goodbye.");
+            CncPendant.log("end shutdown. goodbye.");
         }
 
     }

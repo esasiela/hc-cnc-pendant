@@ -1,4 +1,4 @@
-package com.hedgecourt.ugspendant;
+package com.hedgecourt.cncpendant;
 
 import java.io.BufferedReader;
 import java.io.IOException;

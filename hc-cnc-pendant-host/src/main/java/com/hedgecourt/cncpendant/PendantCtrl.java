@@ -1,4 +1,4 @@
-package com.hedgecourt.ugspendant;
+package com.hedgecourt.cncpendant;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -19,14 +19,35 @@ public class PendantCtrl {
         super();
     }
 
-    public void init() throws UgsPendantException {
+    public void init() throws CncPendantException {
         String propertyFileName = System.getProperty("hcPendant.properties.filename", "hcPendant.properties");
         try {
             this.properties.load(ClassLoader.getSystemResourceAsStream(propertyFileName));
         } catch (IOException E) {
             System.err.println("Failed loading properties from [" + propertyFileName + "]");
-            throw new UgsPendantException(E);
+            throw new CncPendantException(E);
         }
+
+        // validate we have a proper gcode sender selected
+        String gsKey = "gcode.sender";
+        String gsVal = null;
+        if (System.getProperty(gsKey) != null && !System.getProperty(gsKey).isEmpty()) {
+            // user specified via system property
+            gsVal = System.getProperty("gcode.sender");
+
+        } else if (this.getProperty(gsKey) != null && !this.getProperty(gsKey).isEmpty()) {
+            // user specified via properties file
+            gsVal = this.getProperty(gsKey);
+
+        } else {
+            // just use default "ugs", you never forget your first
+            gsVal = "ugs";
+        }
+
+        CncPendant.log("using gcode.sender [" + gsVal + "]");
+        // CncPendant.log("gcode separator [" + this.getProperty(gsVal + ".gcode.separator") + "]");
+
+        this.getProperties().setProperty(gsKey, gsVal);
     }
 
     public void sendStopSignal() {
@@ -97,6 +118,10 @@ public class PendantCtrl {
         }
 
         System.out.println("Socket Server - exiting");
+    }
+
+    public String getGcodeSenderProperty(String key) {
+        return this.getProperty(this.getProperty("gcode.sender") + "." + key);
     }
 
     public String getProperty(String key) {
