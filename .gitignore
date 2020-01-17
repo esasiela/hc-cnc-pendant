@@ -2,3 +2,7 @@ target/
 .settings
 .classpath
 .project
+
+venv/
+.idea
+__pycache__
