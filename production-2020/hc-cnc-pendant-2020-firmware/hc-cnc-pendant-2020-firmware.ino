@@ -13,6 +13,8 @@
 #include <EEPROM.h>
 #include <HC_BouncyButton.h>
 
+const int SERIAL_DEBUG = 0;
+
 
 /***
    PIN definitions
@@ -23,9 +25,9 @@ const int PIN_BTN_CLOCK = 12;
 const int PIN_BTN_LATCH = 11;
 
 const int PIN_LED_NOTIFY = 3;
-const int PIN_LED_100 = 5;
+const int PIN_LED_100 = 9;
 const int PIN_LED_010 = 6;
-const int PIN_LED_001 = 9;
+const int PIN_LED_001 = 5;
 
 // host will map JOG_SIZE_n to proper measurement size
 const int JOG_SIZE_100 = 0;
@@ -39,6 +41,16 @@ const int JOG_UNIT_MM = 21;
 // hc-pendant-2020 spec for data msg start (debugging strings DONT begin with 0x03)
 const uint8_t MSG_START_BYTE = 0x03;
 
+const uint8_t NOTIFY_IDLE = 0x01;
+const uint8_t NOTIFY_ARMED = 0x02;
+const uint8_t NOTIFY_FIRED = 0x03;
+
+// the host app will send me the true notify state once I connect serial
+uint8_t notifyState = NOTIFY_IDLE;
+
+unsigned long lastNotifyBlinkMillis;
+const int NOTIFY_BLINK_DELAY_MILLIS = 250;
+
 // true on any change (press or release)
 boolean isBtnRegisterChange = false;
 // only true for press, not for release
@@ -51,9 +63,6 @@ uint16_t previousBtnRegister;
 
 unsigned long lastDebounceTime;
 const int DEBOUNCE_DELAY_MILLIS = 13;
-
-unsigned long lastBlinkTime;
-const int BLINK_DELAY_MILLIS = 1000;
 
 // set the defaults to 10mm jog size
 // hc-pendant-2020 does not offer any user interface to change from MM to inches, but we code it flexible anyways
@@ -107,12 +116,9 @@ void setup() {
 
 void loop() {
 
-  if ((millis() - lastBlinkTime) >= BLINK_DELAY_MILLIS) {
-    lastBlinkTime = millis();
-    //digitalWrite(PIN_LED_NOTIFY, !digitalRead(PIN_LED_NOTIFY));
-    //digitalWrite(PIN_LED_100, !digitalRead(PIN_LED_100));
-    //digitalWrite(PIN_LED_010, !digitalRead(PIN_LED_010));
-    //digitalWrite(PIN_LED_001, !digitalRead(PIN_LED_001));
+  if (notifyState==NOTIFY_FIRED && (millis() - lastNotifyBlinkMillis) >= NOTIFY_BLINK_DELAY_MILLIS) {
+    lastNotifyBlinkMillis = millis();
+    digitalWrite(PIN_LED_NOTIFY, !digitalRead(PIN_LED_NOTIFY));
   }
 
   /***
@@ -123,7 +129,7 @@ void loop() {
      byte 1 - msg type - 0x01=jog_size, 0x02=notify
      byte 2 - data:
         jog_size - 13=10.0, 14=1.00, 15=0.10
-        notify - TBD
+        notify - IDLE=0x01, ARMED=0x02, FIRED=0x03
   */
   if (Serial.available() >= 3) {
     uint8_t start_byte = Serial.read();
@@ -131,10 +137,14 @@ void loop() {
     uint8_t msg_data = Serial.read();
 
     if (start_byte == 0x03) {
-      Serial.println("client msg with valid start byte");
+      if (SERIAL_DEBUG) {
+        Serial.println(F("client msg with valid start byte"));
+      }
 
       if (msg_type == 0x01) {
-        Serial.println("client msg - jog size");
+        if (SERIAL_DEBUG) {
+          Serial.println(F("client msg - jog size"));
+        }
 
         if (msg_data == 13) {
           jogSizeSelector = JOG_SIZE_100;
@@ -146,11 +156,26 @@ void loop() {
         updateUnitSelectorLED();
 
       } else if (msg_type == 0x02) {
-        Serial.println("client msg - notify");
+        if (SERIAL_DEBUG) {
+          Serial.println(F("client msg - notify"));
+        }
+
+        notifyState = msg_data;
+
+        if (notifyState == NOTIFY_IDLE) {
+          digitalWrite(PIN_LED_NOTIFY, LOW);
+        } else if (notifyState == NOTIFY_ARMED) {
+          digitalWrite(PIN_LED_NOTIFY, HIGH);
+        } else if (notifyState == NOTIFY_FIRED) {
+          // start blinking
+          lastNotifyBlinkMillis = millis();
+          // presumably we were in ARMED (unless I use my fake Fire! button for testing),
+          // so LED was already on, so blinking is best to start by going low
+          digitalWrite(PIN_LED_NOTIFY, LOW);
+        }
       }
     }
   }
-
 
   /***
      read the multiplexed buttons
@@ -189,26 +214,23 @@ void loop() {
 
         // we want only press eveents....curBit is LOW on a press event
         if (!curBit) {
+          if (SERIAL_DEBUG) {
+            Serial.print(F("Press Event - "));
+            printBinary16(btnRegister);
+            Serial.println("");
+            Serial.flush();
+            delay(10);
+          }
 
-          Serial.print("Press Event - ");
-          printBinary16(btnRegister);
-          Serial.println("");
-          Serial.flush();
-          delay(10);
-
-          // buttons 13-15 are the unit selectors
-          /*
-            if (bitIdx==13) {
-            jogSizeSelector = JOG_SIZE_100;
-            updateUnitSelectorLED();
-            } else if (bitIdx==14) {
-            jogSizeSelector = JOG_SIZE_010;
-            updateUnitSelectorLED();
-            } else if (bitIdx==15) {
-            jogSizeSelector = JOG_SIZE_001;
-            updateUnitSelectorLED();
-            }
-          */
+          /* 
+           * buttons 13-15 are the unit selectors. 
+           * handle the press same as the others.
+           *   * send button event to host
+           *   * host determines new unit size
+           *   * host sends unit size information back to me in a client msg
+           *   * i update my led in response to the client msg
+           * this allows sync between pendant hardware and emulator, since host manages state
+           */
 
           // byte 0 : MSG_START_BYTE
           // byte 1 : button number (bitIdx)
@@ -216,25 +238,12 @@ void loop() {
           // OBSOLETE - jog size is maintained in Pendant application in HC Pendant 2020 version
           // byte 3 : jog size (0=10.0, 1=01.0, 2=0.10)
 
+          Serial.flush();
           Serial.write(MSG_START_BYTE);
           Serial.write(bitIdx);
           Serial.write(jogUnitSelector);
           //Serial.write(jogSizeSelector);
           Serial.println("");
-
-          /*
-
-                    // toggle the value in this bit position in the instrumentN byte
-                    if (!btnB.getState()) {
-                      instrument1 ^= 1UL << bitIdx;
-                    }
-                    if (!btnG.getState()) {
-                      instrument2 ^= 1UL << bitIdx;
-                      //Serial.print("instrument2 changed - ");
-                      //printBinaryByte(instrument2);
-                      //Serial.println("");
-                    }
-          */
         }
       }
     }
@@ -242,7 +251,6 @@ void loop() {
 
   // update the "previous" value for the next iteration
   bouncingPreviousBtnRegister = bouncingCurrentBtnRegister;
-
 }
 
 void printBinary16(uint16_t x) {

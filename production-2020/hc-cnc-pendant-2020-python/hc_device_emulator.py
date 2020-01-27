@@ -1,8 +1,10 @@
-from PyQt5.QtCore import *
-from PyQt5.QtWidgets import *
-from PyQt5.QtGui import *
+import threading
 
-from hc_cnc_pendant_2020 import ConsoleFrame
+from PyQt5.QtCore import Qt, QObject, pyqtSignal
+from PyQt5.QtWidgets import QWidget, QFrame, QLabel, QVBoxLayout
+from PyQt5.QtGui import QPainter, QRegion, QBrush, QColor, QPixmap
+
+from hc_cnc_pendant_2020 import ConsoleFrame, NotifyStates
 
 
 class EmuLed(QWidget):
@@ -105,6 +107,13 @@ class EmuLedButton(EmuButton):
         self.emu.button_press(self.button_num)
 
 
+class NotifyToggleComm(QObject):
+    """
+    used to send Qt signal to Notify Fired Thread to toggle the LED
+    """
+    signal = pyqtSignal()
+
+
 class ClientMsgComm(QObject):
     """
     ClientMsgComm is used to send Qt signal to PendantEmu for updates to LEDs on unit size and Job Notify
@@ -124,6 +133,11 @@ class PendantEmulator(QFrame):
         self.pendant = pendant
 
         self.log_console = ConsoleFrame(title="Emu Log", pendant=self.pendant, show_border=False)
+
+        self.notify_fired_thread = None
+        self.notify_lock = threading.Condition()
+        self.notify_toggle_comm = NotifyToggleComm()
+        self.notify_toggle_comm.signal.connect(self.toggle_notify_led)
 
         self.client_msg_comm = ClientMsgComm()
         self.client_msg_comm.signal.connect(self.process_client_msg_comm_signal)
@@ -157,24 +171,32 @@ class PendantEmulator(QFrame):
         image_layout.addWidget(image_label)
 
         # RED - stop
-        EmuButton(image_label, emu=self, diameter=21, color=(255, 0, 0), move_to=(41, 34), button_num=6)
-        # WHITE - G28, G30, GotoXY
-        EmuButton(image_label, emu=self, diameter=21, color=(255, 255, 255), move_to=(41, 81), button_num=11)
-        EmuButton(image_label, emu=self, diameter=21, color=(255, 255, 255), move_to=(41, 127), button_num=10)
-        EmuButton(image_label, emu=self, diameter=21, color=(255, 255, 255), move_to=(41, 174), button_num=9)
-        # YELLOW - x and y axis jog
-        EmuButton(image_label, emu=self, diameter=21, color=(233, 237, 12), move_to=(104, 146), button_num=0)
-        EmuButton(image_label, emu=self, diameter=21, color=(233, 237, 12), move_to=(188, 146), button_num=1)
-        EmuButton(image_label, emu=self, diameter=21, color=(233, 237, 12), move_to=(146, 174), button_num=2)
-        EmuButton(image_label, emu=self, diameter=21, color=(233, 237, 12), move_to=(146, 118), button_num=3)
-        # GREEN - z axis jog
-        EmuButton(image_label, emu=self, diameter=21, color=(37, 200, 10), move_to=(247, 174), button_num=4)
-        EmuButton(image_label, emu=self, diameter=21, color=(37, 200, 10), move_to=(247, 118), button_num=5)
-        # BLUE - zztop and probe
-        EmuButton(image_label, emu=self, diameter=21, color=(0, 0, 200), move_to=(317, 174), button_num=8)
-        EmuButton(image_label, emu=self, diameter=21, color=(0, 0, 200), move_to=(317, 118), button_num=12)
-        # BLACK - notify
-        EmuButton(image_label, emu=self, diameter=21, color=(44, 44, 44), move_to=(317, 63), button_num=7)
+        color = (255, 0, 0)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(41, 34), button_num=6)
+        # G28, G30, GotoXY
+        color = (255, 255, 255)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(41, 81), button_num=11)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(41, 127), button_num=10)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(41, 174), button_num=9)
+        # x axis jog
+        color = (0, 0, 200)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(104, 146), button_num=0)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(188, 146), button_num=1)
+        # y axis jog
+        color = (37, 200, 10)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(146, 174), button_num=2)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(146, 118), button_num=3)
+        # z axis jog
+        color = (233, 237, 12)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(247, 174), button_num=4)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(247, 118), button_num=5)
+        # zztop and probe
+        color = (255, 255, 255)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(317, 174), button_num=8)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(317, 118), button_num=12)
+        # notify
+        color = (0, 0, 0)
+        EmuButton(image_label, emu=self, diameter=21, color=color, move_to=(317, 63), button_num=7)
 
         # LED buttons
         self.led_buttons.append(EmuLedButton(image_label, emu=self, diameter=27, color=(0, 255, 68),
@@ -219,6 +241,9 @@ class PendantEmulator(QFrame):
         self.notify_led.led_on = is_on
         self.notify_led.repaint()
 
+    def toggle_notify_led(self):
+        self.set_notify_led(not self.notify_led.led_on)
+
     def process_client_msg_comm_signal(self, msg):
         """
         This guy runs in the Qt GUI thread
@@ -236,9 +261,33 @@ class PendantEmulator(QFrame):
             self.set_jog_size(idx)
         elif msg[1] == 0x02:
             # job notify setting, data value TBD
-            self.log("signal proc - job notify - data TBD")
+            self.log("signal proc - job notify - " + str(msg[2]))
+            if msg[2] == NotifyStates.IDLE:
+                self.set_notify_led(False)
+            elif msg[2] == NotifyStates.ARMED:
+                self.set_notify_led(True)
+            elif msg[2] == NotifyStates.FIRED:
+                self.notify_fired_thread = threading.Thread(target=self.thread_notify_fired)
+                self.notify_fired_thread.start()
 
-    def pendant_client_name(self):
+    def thread_notify_fired(self, debug=False):
+        while self.pendant.alive and self.pendant.notify_state == NotifyStates.FIRED:
+            self.notify_lock.acquire()
+
+            # emit a signal to toggle the LED
+            self.notify_toggle_comm.signal.emit()
+
+            # go to sleep
+            if debug:
+                self.log("Notify thread sleeps...")
+            self.notify_lock.wait(0.250)
+            if debug:
+                self.log("Notify thread wakes up")
+
+            self.notify_lock.release()
+
+    @staticmethod
+    def pendant_client_name():
         return "emulator"
 
     def pendant_client_msg(self, msg):

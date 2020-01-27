@@ -8,9 +8,9 @@ import sys
 from datetime import datetime, timedelta, date, time
 import configparser
 
-from PyQt5.QtCore import *
-from PyQt5.QtWidgets import *
-from PyQt5.QtGui import *
+from PyQt5.QtCore import QObject, Qt, pyqtSignal
+from PyQt5.QtWidgets import QWidget, QApplication, QLabel, QFrame, QPushButton, QComboBox, QHBoxLayout, QVBoxLayout, \
+    QRadioButton, QGridLayout, QTextEdit, QCheckBox, QDesktopWidget, QMainWindow
 
 from hc_device_emulator import *
 
@@ -19,8 +19,10 @@ def rgb_from_config(color_str="0,0,0"):
     return [int(c) for c in color_str.split(',')]
 
 
+# TODO upgrade Python version on Raspberry Pi controller to get Enum support
 #class LogTypes(Enum):
 #    SYS = auto()
+#    DEBUG = auto()
 #    MSG = auto()
 #    GCODE = auto()
 #    JOG = auto()
@@ -30,12 +32,19 @@ def rgb_from_config(color_str="0,0,0"):
 
 class LogTypes:
     SYS = 1
-    MSG = 2
-    GCODE = 3
-    JOG = 4
-    STOP = 5
-    PROBE = 6
-    NOTIFY = 7
+    DEBUG = 2
+    MSG = 3
+    GCODE = 4
+    JOG = 5
+    STOP = 6
+    PROBE = 7
+    NOTIFY = 8
+
+
+class NotifyStates:
+    IDLE = 0x01
+    ARMED = 0x02
+    FIRED = 0x03
 
 
 class SerialConnectionWidget(QFrame):
@@ -84,8 +93,10 @@ class SerialConnectionWidget(QFrame):
         layout.addWidget(self.connect_button)
         self.setLayout(layout)
 
-    def serial_connection_event(self):
-        self.pendant.log("serial widget - handling serial connection event")
+    def serial_connection_event(self, debug=False):
+        if debug:
+            self.pendant.log("serial widget - handling serial connection event")
+
         if self.pendant.is_serial_connected():
             self.connect_button.setText(self.pendant.config["gui_frame_serial_disconnect"])
         else:
@@ -190,20 +201,30 @@ class ProbeFrame(QFrame):
         self.setLayout(layout)
 
     def change_axis_selection(self):
-        rb = self.sender()
+        rb: QRadioButton = self.sender()
         if rb.isChecked():
-            self.pendant.log("probe axis selection changed: " + rb.axis)
+            # if debug:
+            #    self.pendant.log("probe axis selection changed: " + rb.axis)
             self.pendant.probe_axis = rb.axis
 
-    def change_tool_selection(self, i):
-        self.pendant.log("probe tool selection changed: text[" + self.tool_combobox.currentText() + "] data[" +
-                         str(self.tool_combobox.currentData()) + "]")
+    def change_tool_selection(self, i, debug=False):
+        if debug:
+            self.pendant.log("probe tool selection changed: text[" + self.tool_combobox.currentText() + "] data[" +
+                             str(self.tool_combobox.currentData()) + "]")
         self.pendant.probe_tool_mm = self.tool_combobox.currentData()
 
-    def change_plate_selection(self, i):
-        self.pendant.log("probe plate selection changed: text[" + self.plate_combobox.currentText() + "] data[" +
-                         str(self.plate_combobox.currentData()) + "]")
+    def change_plate_selection(self, i, debug=False):
+        if debug:
+            self.pendant.log("probe plate selection changed: text[" + self.plate_combobox.currentText() + "] data[" +
+                             str(self.plate_combobox.currentData()) + "]")
         self.pendant.probe_plate_mm = self.plate_combobox.currentData()
+
+
+class NotifyFrameClientMsgComm(QObject):
+    """
+    Used to send Qt signal to NotifyFrame for updates to the notify state
+    """
+    signal = pyqtSignal(bytearray)
 
 
 class NotifyFrame(QFrame):
@@ -213,18 +234,68 @@ class NotifyFrame(QFrame):
     """
     def __init__(self, parent=None, pendant=None):
         QFrame.__init__(self, parent)
+        self.client_msg_comm = NotifyFrameClientMsgComm()
+        self.client_msg_comm.signal.connect(self.process_client_msg_comm_signal)
+
         self.pendant = pendant
+        self.pendant.add_client_msg_receiver(self)
+
         self.setFrameStyle(QFrame.StyledPanel)
         layout = QVBoxLayout()
         layout.addWidget(QLabel(self.pendant.config["gui_frame_notify_title"]))
+
+        label_frame = QFrame()
+
+        label_layout = QHBoxLayout()
+        label_layout.setContentsMargins(0, 0, 0, 0)
+        label_layout.addWidget(QLabel("State:  "))
+        self.state_label = QLabel("")
+        label_layout.addWidget(self.state_label)
+
+        fire_button = QPushButton("Fire!")
+        fire_button.clicked.connect(self.click_fired)
+        label_layout.addWidget(fire_button)
+
+        label_layout.addStretch()
+        label_frame.setLayout(label_layout)
+
+        layout.addWidget(label_frame)
+
+        self.update_notify_state()
+
         self.setLayout(layout)
+
+    def click_fired(self):
+        self.pendant.set_notify_state(NotifyStates.FIRED)
+
+    def update_notify_state(self):
+        if self.pendant.notify_state == NotifyStates.IDLE:
+            self.state_label.setText("IDLE")
+        elif self.pendant.notify_state == NotifyStates.ARMED:
+            self.state_label.setText("ARMED")
+        elif self.pendant.notify_state == NotifyStates.FIRED:
+            self.state_label.setText("FIRED")
+
+    @staticmethod
+    def pendant_client_name():
+        return "notify frame"
+
+    def pendant_client_msg(self, msg):
+        self.client_msg_comm.signal.emit(msg)
+
+    def process_client_msg_comm_signal(self, msg):
+        """
+        I don't care about the msg, I'll just update the display of the Notify Frame every time
+        :param msg:
+        :return:
+        """
+        self.update_notify_state()
 
 
 class ConsoleComm(QObject):
     """
     ConsoleComm is used to send Qt signal to ConsoleFrame for text edit updates in the GUI thread
     """
-    #signal = pyqtSignal(str, LogTypes)
     signal = pyqtSignal(str, int)
 
 
@@ -291,7 +362,8 @@ class SerialClientMsgSender:
     def __init__(self, pendant=None):
         self.pendant = pendant
 
-    def pendant_client_name(self):
+    @staticmethod
+    def pendant_client_name():
         return "serial"
 
     def pendant_client_msg(self, msg):
@@ -337,6 +409,8 @@ class Pendant:
 
         self.gcode_sender_enable = True
         self.gcode_sender_name = 'bcnc'
+
+        self.notify_state = NotifyStates.IDLE
 
     def __del__(self):
         if self.alive:
@@ -395,18 +469,29 @@ class Pendant:
         self.send_jog_size()
         self.send_job_notify()
 
-    def remove_client_msg_receiver(self, receiver_name):
-        self.log("remove_client_msg_rec - list size before " + str(len(self.client_msg_receivers)))
-        self.client_msg_receivers[:] = [rec for rec in self.client_msg_receivers if rec.pendant_client_name() != "serial"]
-        self.log("remove_client_msg_rec - list size after " + str(len(self.client_msg_receivers)))
+    def remove_client_msg_receiver(self, receiver_name, debug=False):
+        if debug:
+            self.log("remove_client_msg_rec(" + receiver_name + ") list size before " +
+                     str(len(self.client_msg_receivers)))
+
+        self.client_msg_receivers[:] = [rec for rec in self.client_msg_receivers
+                                        if rec.pendant_client_name() != "serial"]
+
+        if debug:
+            self.log("remove_client_msg_rec(" + receiver_name + ") list size after " +
+                     str(len(self.client_msg_receivers)))
 
     def set_jog_size(self, new_size):
         self.jog_size_index = new_size
         self.send_jog_size()
 
+    def set_notify_state(self, new_state):
+        self.notify_state = new_state
+        self.send_job_notify()
+
     def send_job_notify(self):
         # start byte, 0x01=jog size (and 0x02=notify), notify data TBD
-        self.send_client_msg(bytearray([0x03, 0x02, 0x76]))
+        self.send_client_msg(bytearray([0x03, 0x02, self.notify_state]))
 
     def send_jog_size(self):
         # start byte, 0x01=jog size (and 0x02=notify), index is 13-15 which client will map to the right LED
@@ -427,7 +512,9 @@ class Pendant:
                 msg = self.client_msg_queue.get()
 
                 for receiver in self.client_msg_receivers:
-                    self.log("thread_client_msg - sending msg " + str(bytearray([msg[1]])) + " to - " + receiver.pendant_client_name())
+                    if debug:
+                        self.log("thread_client_msg - sending msg " + str(bytearray([msg[1]])) + " to - " +
+                                 receiver.pendant_client_name())
                     receiver.pendant_client_msg(msg)
 
             if self.alive:
@@ -500,6 +587,7 @@ class Pendant:
     def thread_serial_read(self, debug=False):
         while self.alive and self.is_serial_connected():
             try:
+                # REMEMBER: when button 10 shows up, readline() treats that as LF, so splits the msg
                 msg = self.serial_port.readline()
 
                 if msg is None or len(msg) < 1:
@@ -507,20 +595,31 @@ class Pendant:
                         self.log("serial_read: read timed out, msg is none")
                 else:
                     if debug:
-                        self.log("serial_read: have a message")
+                        self.log("serial_read: have a message, len " + str(len(msg)))
 
                     if msg[0] == 0x03:
                         # msg begins with 0x03 (ETX=start of text), real message
-                        self.log("serial_read: msg [" + str(msg) + "]", LogTypes.MSG)
+                        if debug:
+                            self.log("serial_read: msg [" + str(msg) + "]", LogTypes.MSG)
                         self.add_msg(msg)
+                    elif msg[0] == 21:
+                        # 21 == 0x15 == NAK, this comes through as separate stupid message on button 10 press
+                        if debug:
+                            self.log("serial_read: ignoring button 10 line feed.")
                     else:
                         # msg doesnt begin with 0x03, debugging message
                         txt = msg.decode("utf-8").rstrip()
                         self.log("serial_read: txt [" + txt + "]", LogTypes.MSG)
+                        if debug:
+                            if msg[0] != 72:
+                                for idx in range(len(msg)):
+                                    self.log("  byte " + str(idx) + " [" + str(msg[idx]) + "]")
 
                         # special action on one specific string, startup "HC CNC PENDANT 2020"
                         if txt == self.config["serial_device_start_msg"]:
-                            self.log("serial device started, adding a msg bridge")
+                            if debug:
+                                self.log("serial device started, adding a msg bridge")
+
                             # put a connector on the list to map client messages to the client device
                             self.add_client_msg_receiver(SerialClientMsgSender(self))
 
@@ -546,14 +645,14 @@ class Pendant:
                 #   3 : jog size : 0=10.0, 1=01.0, 2=0.10
 
                 # look up the type of button by button_num
-                self.log("button=" + str(msg[1]), LogTypes.MSG)
+                #self.log("button=" + str(msg[1]), LogTypes.MSG)
 
                 key_prefix = "btn_" + str(msg[1]) + "_"
 
                 # if "stop" config key exists, we have a STOP button
                 try:
                     stop = self.config[key_prefix + "stop"]
-                    self.log("button type - stop - " + stop)
+                    self.log("button " + str(msg[1]) + " - stop", LogTypes.MSG)
                     self.send_cmd(stop)
                 except KeyError:
                     pass
@@ -561,14 +660,25 @@ class Pendant:
                 # if "notify" config key exists, we have a NOTIFY button
                 try:
                     notify = self.config[key_prefix + "notify"]
-                    self.log("button type - notify - " + notify)
+                    self.log("button " + str(msg[1]) + " - notify", LogTypes.MSG)
+
+                    if self.notify_state == NotifyStates.IDLE:
+                        # activate the monitor
+                        self.set_notify_state(NotifyStates.ARMED)
+                    elif self.notify_state == NotifyStates.ARMED:
+                        # deactivate the monitor
+                        self.set_notify_state(NotifyStates.IDLE)
+                    elif self.notify_state == NotifyStates.FIRED:
+                        # user is telling us the notify message was received
+                        self.set_notify_state(NotifyStates.IDLE)
+
                 except KeyError:
                     pass
 
                 # if "probe" config key exists, we have a PROBE button
                 try:
                     probe = self.config[key_prefix + "probe"]
-                    self.log("button type - probe - " + probe)
+                    # self.log("button " + str(msg[1]) + " - probe", LogTypes.MSG)
 
                     # we need:
                     #  [AXIS] - X, Y, Z
@@ -585,8 +695,8 @@ class Pendant:
                         dir_bk = "-"
                         offset = str(float(self.probe_plate_mm) + float(self.probe_tool_mm) / 2)
 
-                    self.log("button type - probe - axis[" + axis + "] dir_fw[" + dir_fw + "] dir_bk[" + dir_bk +
-                             "] offset[" + offset + "]")
+                    self.log("button " + str(msg[1]) + " - probe - axis[" + axis + "] dir_fw[" + dir_fw + "] dir_bk[" + dir_bk +
+                             "] offset[" + offset + "]", LogTypes.MSG)
 
                     gcode = self.config["probe_gcode"].replace("[AXIS]", axis)\
                         .replace("[DIR_FW]", dir_fw).replace("[DIR_BK]", dir_bk)\
@@ -600,7 +710,7 @@ class Pendant:
                 # if "size" config key exists, we have a JOG_SIZE button
                 try:
                     new_size = self.config[key_prefix + "size"]
-                    self.log("button type - jog_size [" + str(msg[1]) + "] [" + new_size + "]")
+                    self.log("button " + str(msg[1]) + "- jog_size [" + new_size + "]", LogTypes.MSG)
 
                     # we don't send the size value, we send the size selector index
                     self.set_jog_size(msg[1])
@@ -610,7 +720,7 @@ class Pendant:
                 # if "gcode" config key exists, we have straight gcode to send
                 try:
                     gcode = self.config[key_prefix + "gcode"]
-                    self.log("button type - gcode [" + gcode + "]")
+                    self.log("button " + str(msg[1]) + " - gcode [" + gcode + "]", LogTypes.MSG)
                     self.send_gcode(gcode)
                 except KeyError:
                     pass
@@ -623,9 +733,10 @@ class Pendant:
 
                     # Jog Size is maintained here in the Pendant app, not by the message from the client
                     # jog_size = self.config["jog_size_" + str(msg[3])]
-                    self.log("jog_size_index " + str(self.jog_size_index))
+                    # self.log("jog_size_index " + str(self.jog_size_index), LogTypes.JOG)
                     jog_size = self.config["btn_" + str(self.jog_size_index) + "_size"]
-                    self.log("button type - jog [" + axis + direction + "] [" + jog_unit + "] [" + jog_size + "]")
+                    self.log("button " + str(msg[1]) + " - jog [" + axis + direction + "] [" + jog_unit + "] [" +
+                             jog_size + "]", LogTypes.MSG)
 
                     gcode = self.config["jog_gcode_pattern"].replace("[JOG_UNIT]", jog_unit)\
                         .replace("[JOG_AXIS]", axis).replace("[JOG_DIR]", direction).replace("[JOG_SIZE]", jog_size)
@@ -663,11 +774,12 @@ class Pendant:
         self.log_gcode(cmd)
         self.send_gcode_or_cmd("cmd", cmd)
 
-    def send_gcode_or_cmd(self, key, txt):
+    def send_gcode_or_cmd(self, key, txt, debug=False):
         """
         Helper method, reuses the logic between gcode and cmd's
         :param key: "gcode" or "cmd"
         :param txt: the actual gcode or cmd string
+        :type debug: True for verbose output
         :return: nothing
         """
         key_prefix = self.gcode_sender_name + "_" + key + "_"
@@ -676,13 +788,15 @@ class Pendant:
         base_url = self.config[key_prefix + "url"]
 
         # gcode string needs to be translated to sender-specific format (i.e. for bCNC replace ; with \n)
-        self.log("text replace, before [" + txt + "]")
+        if debug:
+            self.log("text replace, before [" + txt + "]")
 
         # ok, so configparser escapes the string literal, rather than beat my head against this anymore,
         # i'm just straight replacing the one and only string literal that's between me and victory.
         txt = txt.replace(self.config[key + "_separator"],
                           self.config[key_prefix + "separator"].replace('\\n', '\n'))
-        self.log("text replace, after  [" + txt + "]")
+        if debug:
+            self.log("text replace, after  [" + txt + "]")
 
         # query param name is in the config
         param_name = self.config[key_prefix + "paramName"]
@@ -759,14 +873,17 @@ class PendantGui(Pendant):
         if self.config.getboolean("window_position"):
             print("setting window position")
             monitor = QDesktopWidget().screenGeometry(int(self.config["window_monitor"]))
-            self.main_window.move(monitor.left() + int(self.config["window_x"]), monitor.top() + int(self.config["window_y"]))
+            self.main_window.move(monitor.left() + int(self.config["window_x"]), monitor.top() +
+                                  int(self.config["window_y"]))
         else:
             print("config says don't set window position, allowing default to continue")
 
         self.main_window.show()
 
-    def changed_enable_state(self, state):
-        self.log("enable state changed")
+    def changed_enable_state(self, state, debug=False):
+        if debug:
+            self.log("enable state changed")
+
         self.gcode_sender_enable = (state == Qt.Checked)
 
 
