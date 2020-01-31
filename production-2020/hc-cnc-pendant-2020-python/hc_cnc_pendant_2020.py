@@ -1,4 +1,4 @@
-import threading
+from threading import Thread, Condition
 import requests
 from queue import Queue
 # from enum import Enum, auto
@@ -8,43 +8,19 @@ import sys
 from datetime import datetime, timedelta, date, time
 import configparser
 
-from PyQt5.QtCore import QObject, Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget, QApplication, QLabel, QFrame, QPushButton, QComboBox, QHBoxLayout, QVBoxLayout, \
-    QRadioButton, QGridLayout, QTextEdit, QCheckBox, QDesktopWidget, QMainWindow
+from PyQt5.QtCore import QObject, pyqtSignal, Qt
+from PyQt5.QtWidgets import QApplication, QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox, QHBoxLayout, \
+    QRadioButton, QGridLayout,  QCheckBox, QDesktopWidget, QMainWindow, QTabWidget
 
-from hc_device_emulator import *
+from hc_observable import ThreadedObserver
+from hc_device_emulator import PendantEmulator
+from hc_cnc_console import ConsoleFrame, StdinFrame
+from hc_cnc_notify import NotifyFrame, NotifyManager
+from hc_cnc_constants import LogTypes, JobStates
 
 
 def rgb_from_config(color_str="0,0,0"):
     return [int(c) for c in color_str.split(',')]
-
-
-# TODO upgrade Python version on Raspberry Pi controller to get Enum support
-#class LogTypes(Enum):
-#    SYS = auto()
-#    DEBUG = auto()
-#    MSG = auto()
-#    GCODE = auto()
-#    JOG = auto()
-#    STOP = auto()
-#    PROBE = auto()
-#    NOTIFY = auto()
-
-class LogTypes:
-    SYS = 1
-    DEBUG = 2
-    MSG = 3
-    GCODE = 4
-    JOG = 5
-    STOP = 6
-    PROBE = 7
-    NOTIFY = 8
-
-
-class NotifyStates:
-    IDLE = 0x01
-    ARMED = 0x02
-    FIRED = 0x03
 
 
 class SerialConnectionWidget(QFrame):
@@ -220,140 +196,6 @@ class ProbeFrame(QFrame):
         self.pendant.probe_plate_mm = self.plate_combobox.currentData()
 
 
-class NotifyFrameClientMsgComm(QObject):
-    """
-    Used to send Qt signal to NotifyFrame for updates to the notify state
-    """
-    signal = pyqtSignal(bytearray)
-
-
-class NotifyFrame(QFrame):
-    """
-    Widget for displaying the CNC Job Notify information.  Used for sending me a text message
-    when a long running CNC G-Code job completes.
-    """
-    def __init__(self, parent=None, pendant=None):
-        QFrame.__init__(self, parent)
-        self.client_msg_comm = NotifyFrameClientMsgComm()
-        self.client_msg_comm.signal.connect(self.process_client_msg_comm_signal)
-
-        self.pendant = pendant
-        self.pendant.add_client_msg_receiver(self)
-
-        self.setFrameStyle(QFrame.StyledPanel)
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel(self.pendant.config["gui_frame_notify_title"]))
-
-        label_frame = QFrame()
-
-        label_layout = QHBoxLayout()
-        label_layout.setContentsMargins(0, 0, 0, 0)
-        label_layout.addWidget(QLabel("State:  "))
-        self.state_label = QLabel("")
-        label_layout.addWidget(self.state_label)
-
-        fire_button = QPushButton("Fire!")
-        fire_button.clicked.connect(self.click_fired)
-        label_layout.addWidget(fire_button)
-
-        label_layout.addStretch()
-        label_frame.setLayout(label_layout)
-
-        layout.addWidget(label_frame)
-
-        self.update_notify_state()
-
-        self.setLayout(layout)
-
-    def click_fired(self):
-        self.pendant.set_notify_state(NotifyStates.FIRED)
-
-    def update_notify_state(self):
-        if self.pendant.notify_state == NotifyStates.IDLE:
-            self.state_label.setText("IDLE")
-        elif self.pendant.notify_state == NotifyStates.ARMED:
-            self.state_label.setText("ARMED")
-        elif self.pendant.notify_state == NotifyStates.FIRED:
-            self.state_label.setText("FIRED")
-
-    @staticmethod
-    def pendant_client_name():
-        return "notify frame"
-
-    def pendant_client_msg(self, msg):
-        self.client_msg_comm.signal.emit(msg)
-
-    def process_client_msg_comm_signal(self, msg):
-        """
-        I don't care about the msg, I'll just update the display of the Notify Frame every time
-        :param msg:
-        :return:
-        """
-        self.update_notify_state()
-
-
-class ConsoleComm(QObject):
-    """
-    ConsoleComm is used to send Qt signal to ConsoleFrame for text edit updates in the GUI thread
-    """
-    signal = pyqtSignal(str, int)
-
-
-class ConsoleFrame(QFrame):
-    """
-    Console Frame provides a text edit that you append messages to for display in GUI rather
-    than sysout console
-    """
-    def __init__(self, parent=None, title=None, pendant=None, show_border=True):
-        QFrame.__init__(self, parent)
-        self.pendant = pendant
-
-        self.console_comm = ConsoleComm()
-        self.console_comm.signal.connect(self.process_log_signal)
-
-        if show_border:
-            self.setFrameStyle(QFrame.StyledPanel)
-
-        self.text_area = QTextEdit(parent)
-        self.text_area.setReadOnly(True)
-        self.text_area.setLineWrapMode(QTextEdit.NoWrap)
-
-        self.clear_button = QPushButton(self.pendant.config["gui_frame_console_clear"])
-        self.clear_button.clicked.connect(self.click_clear)
-
-        top_frame = QWidget()
-        top_layout = QHBoxLayout()
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.addWidget(QLabel(title))
-        top_layout.addWidget(self.clear_button)
-        top_frame.setLayout(top_layout)
-
-        layout = QVBoxLayout()
-        if not show_border:
-            layout.setContentsMargins(0, 0, 0, 0)
-
-        layout.addWidget(top_frame)
-        layout.addWidget(self.text_area)
-        self.setLayout(layout)
-
-    def click_clear(self):
-        self.text_area.clear()
-
-    def log(self, text, msg_type=LogTypes.SYS):
-        if msg_type is None:
-            msg_type = LogTypes.SYS
-        self.console_comm.signal.emit(text, msg_type)
-
-    def process_log_signal(self, text, msg_type):
-        """
-        This guy runs in the Qt GUI thread when we emit the signal
-        :param text: string to log
-        :param msg_type: the type of message, used for coloration and filtering
-        :return: nothing
-        """
-        self.text_area.append(text)
-
-
 class SerialClientMsgSender:
     """
     Class used to pass client messages generated by the Pendant application to the serial
@@ -376,29 +218,39 @@ class SerialClientMsgSender:
         self.pendant.serial_port.flush()
 
 
-class Pendant:
-    def __init__(self, config=None):
+class Pendant(ThreadedObserver):
+    def __init__(self, config=None, **kwargs):
+        super().__init__(**kwargs)
+
         self.config = config
+        self.notify_manager = NotifyManager(config=config)
+        self.notify_manager.add_observer(self)
+
         self.log_object = None
         self.gcode_log = None
         self.serial_port = None
         self.serial_thread = None
         self.serial_observers = []
 
-        self.alive = True
-        self.alive_lock = threading.Condition()
-        self.log_lock = threading.Condition()
-        self.gcode_log_lock = threading.Condition()
+        self.stdin_line_queue = Queue()
+        stdin_thread = Thread(target=self.thread_stdin)
+        stdin_thread.daemon = True
+        stdin_thread.start()
 
-        self.client_msg_lock = threading.Condition()
+        self.alive = True
+        self.alive_lock = Condition()
+        self.log_lock = Condition()
+        self.gcode_log_lock = Condition()
+
         self.client_msg_queue = Queue()
         self.client_msg_receivers = []
-        self.client_msg_thread = threading.Thread(target=self.thread_client_msg)
+        self.client_msg_thread = Thread(target=self.thread_client_msg)
+        self.client_msg_thread.daemon = True
         self.client_msg_thread.start()
 
-        self.msg_lock = threading.Condition()
         self.msg_queue = Queue()
-        self.msg_thread = threading.Thread(target=self.thread_msg)
+        self.msg_thread = Thread(target=self.thread_msg)
+        self.msg_thread.daemon = True
         self.msg_thread.start()
 
         self.jog_size_index = 13
@@ -409,8 +261,6 @@ class Pendant:
 
         self.gcode_sender_enable = True
         self.gcode_sender_name = 'bcnc'
-
-        self.notify_state = NotifyStates.IDLE
 
     def __del__(self):
         if self.alive:
@@ -427,32 +277,33 @@ class Pendant:
         print("shutdown - serial_disconnect")
         self.serial_disconnect()
 
-        print("shutdown - shutting down msg thread")
-        self.msg_lock.acquire()
-        self.msg_lock.notify_all()
-        self.msg_lock.release()
-        self.msg_thread.join()
-
-        print("shutdown - shutting down client msg thread")
-        self.client_msg_lock.acquire()
-        self.client_msg_lock.notify_all()
-        self.client_msg_lock.release()
-        self.client_msg_thread.join()
-
         print("shutdown - done")
 
-    def add_msg(self, msg):
-        self.msg_lock.acquire()
-        self.msg_queue.put(msg)
-        self.msg_lock.notify_all()
-        self.msg_lock.release()
+    def observable_update(self, o):
+        """
+        Handles updates to any observables that we registered to watch.
+        1) NotifyManager - let clients (device, emu) know when notify changes state (LED display)
+        :param o: the observable that changed
+        :return: nothing
+        """
+        if isinstance(o, NotifyManager):
+            # the NotifyManager changed state, let the clients (device,emu) know
+            self.send_job_notify()
 
-    def log(self, text, msg_type=None):
+    def add_msg(self, msg):
+        self.msg_queue.put(msg)
+
+    def log(self, text, msg_type=None, stamp=False):
         self.log_lock.acquire()
+        t = text
+        if stamp:
+            # prepend a timestamp
+            t = str(datetime.now()).split('.')[0] + " " + t
+
         if self.alive:
-            self.log_object.log(text, msg_type)
+            self.log_object.log(t, msg_type)
         else:
-            print(text)
+            print(t)
         self.log_lock.release()
 
     def log_gcode(self, gcode):
@@ -485,46 +336,49 @@ class Pendant:
         self.jog_size_index = new_size
         self.send_jog_size()
 
-    def set_notify_state(self, new_state):
-        self.notify_state = new_state
-        self.send_job_notify()
-
     def send_job_notify(self):
+        """
+        Inform any clients (device, emulator) that we have a change in notify state, so they
+        may update their green LED.
+        This method does NOT send the text/email, that is done by NotifyManager.operator_notice()
+        :return: nothing
+        """
         # start byte, 0x01=jog size (and 0x02=notify), notify data TBD
-        self.send_client_msg(bytearray([0x03, 0x02, self.notify_state]))
+        self.send_client_msg(bytearray([0x03, 0x02, self.notify_manager.notify_state]))
 
     def send_jog_size(self):
         # start byte, 0x01=jog size (and 0x02=notify), index is 13-15 which client will map to the right LED
         self.send_client_msg(bytearray([0x03, 0x01, self.jog_size_index]))
 
     def send_client_msg(self, msg):
-        self.client_msg_lock.acquire()
+        """
+        Put the client_msg onto the queue and the daemon thread will get() it and send to registered clients.
+        :param msg: the byte message to send to the clients (device, emu)
+        :return: nothing
+        """
         self.client_msg_queue.put(msg)
-        self.client_msg_lock.notify_all()
-        self.client_msg_lock.release()
 
     def thread_client_msg(self, debug=False):
-        self.client_msg_lock.acquire()
-
-        while self.alive:
-
-            while not self.client_msg_queue.empty():
-                msg = self.client_msg_queue.get()
-
-                for receiver in self.client_msg_receivers:
-                    if debug:
-                        self.log("thread_client_msg - sending msg " + str(bytearray([msg[1]])) + " to - " +
-                                 receiver.pendant_client_name())
-                    receiver.pendant_client_msg(msg)
-
-            if self.alive:
+        while True:
+            msg = self.client_msg_queue.get()
+            for receiver in self.client_msg_receivers:
                 if debug:
-                    self.log("thread_client_msg - going to sleep")
-                self.client_msg_lock.wait(int(self.config["ctl_thread_sleep_sec"]))
-                if debug:
-                    self.log("thread_client_msg - waking up")
+                    self.log("thread_client_msg - sending msg " + str(bytearray([msg[1]])) + " to - " +
+                             receiver.pendant_client_name())
+                receiver.pendant_client_msg(msg)
 
-        self.client_msg_lock.release()
+    def thread_stdin(self, debug=True):
+        while True:
+            line = self.stdin_line_queue.get()
+            if debug:
+                self.log("stdin [" + line + "]")
+            # parse the line, expecting it is bCNC output
+            if line == self.config[self.gcode_sender_name + "_stdin_start"]: #Controller state changed to: Run (Running: True)":
+                self.log("gcode job started", stamp=True)
+                self.notify_manager.set_job_state(JobStates.RUNNING)
+            elif line == self.config[self.gcode_sender_name + "_stdin_stop"]: #Controller state changed to: Idle (Running: False)":
+                self.notify_manager.set_job_state(JobStates.IDLE)
+                self.log("gcode job ended", stamp=True)
 
     def observe_serial_connection(self, observer):
         """
@@ -548,10 +402,10 @@ class Pendant:
         if not self.is_serial_connected():
             self.log("connecting to serial port [" + port_name + "]")
             try:
-                self.serial_port = serial.Serial(port=port_name, timeout=1)
+                self.serial_port = serial.Serial(port=port_name, timeout=int(self.config["comm_read_timeout"]))
                 self.log("connection status: " + str(self.serial_port.isOpen()))
 
-                self.serial_thread = threading.Thread(target=self.thread_serial_read)
+                self.serial_thread = Thread(target=self.thread_serial_read)
                 self.serial_thread.start()
 
                 self.fire_serial_connection_event()
@@ -630,130 +484,103 @@ class Pendant:
         self.log("serial_read: end")
 
     def thread_msg(self, debug=False):
-        self.msg_lock.acquire()
+        while True:
+            msg = self.msg_queue.get()
 
-        while self.alive:
+            # message bytes:
+            #   0 : start of text : const 0x03
+            #   1 : button num : 0-127 (really 0-15 for HC Pendant 2020)
+            #   2 : mm/inch : 21/20 (always 21 for HC Pendant 2020, but keep it generic)
+            #   OBSOLETE - fourth byte is no longer sent in Pendant 2020
+            #   3 : jog size : 0=10.0, 1=01.0, 2=0.10
 
-            while not self.msg_queue.empty():
-                msg = self.msg_queue.get()
+            # look up the type of button by button_num
+            key_prefix = "btn_" + str(msg[1]) + "_"
 
-                # message bytes:
-                #   0 : start of text : const 0x03
-                #   1 : button num : 0-127 (really 0-15 for HC Pendant 2020)
-                #   2 : mm/inch : 21/20 (always 21 for HC Pendant 2020, but keep it generic)
-                #   OBSOLETE - fourth byte is no longer sent in Pendant 2020
-                #   3 : jog size : 0=10.0, 1=01.0, 2=0.10
+            # if "stop" config key exists, we have a STOP button
+            try:
+                stop = self.config[key_prefix + "stop"]
+                self.log("button " + str(msg[1]) + " - stop", LogTypes.MSG)
+                self.send_cmd(stop)
+            except KeyError:
+                pass
 
-                # look up the type of button by button_num
-                #self.log("button=" + str(msg[1]), LogTypes.MSG)
+            # if "notify" config key exists, we have a NOTIFY button
+            try:
+                notify = self.config[key_prefix + "notify"]
+                self.log("button " + str(msg[1]) + " - notify", LogTypes.MSG)
+                self.notify_manager.process_notify_button()
+            except KeyError:
+                pass
 
-                key_prefix = "btn_" + str(msg[1]) + "_"
+            # if "probe" config key exists, we have a PROBE button
+            try:
+                probe = self.config[key_prefix + "probe"]
+                # we need:
+                #  [AXIS] - X, Y, Z
+                #  [DIR_FW] - Z probes negative so val is '-', XY probe positive so val is '' blank
+                #  [DIR_BK] - opposite of DIR_FW, Z='', XY='-'
+                #  [OFFSET_MM] - Z=plate_mm, XY=plate_mm+(tool_diameter/2)
+                axis = self.probe_axis
+                if axis == "Z":
+                    dir_fw = "-"
+                    dir_bk = ""
+                    offset = str(self.probe_plate_mm)
+                else:
+                    dir_fw = ""
+                    dir_bk = "-"
+                    offset = str(float(self.probe_plate_mm) + float(self.probe_tool_mm) / 2)
 
-                # if "stop" config key exists, we have a STOP button
-                try:
-                    stop = self.config[key_prefix + "stop"]
-                    self.log("button " + str(msg[1]) + " - stop", LogTypes.MSG)
-                    self.send_cmd(stop)
-                except KeyError:
-                    pass
+                self.log("button " + str(msg[1]) + " - probe - axis[" + axis + "] dir_fw[" + dir_fw + "] dir_bk[" + dir_bk +
+                         "] offset[" + offset + "]", LogTypes.MSG)
 
-                # if "notify" config key exists, we have a NOTIFY button
-                try:
-                    notify = self.config[key_prefix + "notify"]
-                    self.log("button " + str(msg[1]) + " - notify", LogTypes.MSG)
+                gcode = self.config["probe_gcode"].replace("[AXIS]", axis)\
+                    .replace("[DIR_FW]", dir_fw).replace("[DIR_BK]", dir_bk)\
+                    .replace("[OFFSET_MM]", offset)
 
-                    if self.notify_state == NotifyStates.IDLE:
-                        # activate the monitor
-                        self.set_notify_state(NotifyStates.ARMED)
-                    elif self.notify_state == NotifyStates.ARMED:
-                        # deactivate the monitor
-                        self.set_notify_state(NotifyStates.IDLE)
-                    elif self.notify_state == NotifyStates.FIRED:
-                        # user is telling us the notify message was received
-                        self.set_notify_state(NotifyStates.IDLE)
+                self.send_gcode(gcode)
 
-                except KeyError:
-                    pass
+            except KeyError:
+                pass
 
-                # if "probe" config key exists, we have a PROBE button
-                try:
-                    probe = self.config[key_prefix + "probe"]
-                    # self.log("button " + str(msg[1]) + " - probe", LogTypes.MSG)
+            # if "size" config key exists, we have a JOG_SIZE button
+            try:
+                new_size = self.config[key_prefix + "size"]
+                self.log("button " + str(msg[1]) + "- jog_size [" + new_size + "]", LogTypes.MSG)
 
-                    # we need:
-                    #  [AXIS] - X, Y, Z
-                    #  [DIR_FW] - Z probes negative so val is '-', XY probe positive so val is '' blank
-                    #  [DIR_BK] - opposite of DIR_FW, Z='', XY='-'
-                    #  [OFFSET_MM] - Z=plate_mm, XY=plate_mm+(tool_diameter/2)
-                    axis = self.probe_axis
-                    if axis == "Z":
-                        dir_fw = "-"
-                        dir_bk = ""
-                        offset = str(self.probe_plate_mm)
-                    else:
-                        dir_fw = ""
-                        dir_bk = "-"
-                        offset = str(float(self.probe_plate_mm) + float(self.probe_tool_mm) / 2)
+                # we don't send the size value, we send the size selector index
+                self.set_jog_size(msg[1])
+            except KeyError:
+                pass
 
-                    self.log("button " + str(msg[1]) + " - probe - axis[" + axis + "] dir_fw[" + dir_fw + "] dir_bk[" + dir_bk +
-                             "] offset[" + offset + "]", LogTypes.MSG)
+            # if "gcode" config key exists, we have straight gcode to send
+            try:
+                gcode = self.config[key_prefix + "gcode"]
+                self.log("button " + str(msg[1]) + " - gcode [" + gcode + "]", LogTypes.MSG)
+                self.send_gcode(gcode)
+            except KeyError:
+                pass
 
-                    gcode = self.config["probe_gcode"].replace("[AXIS]", axis)\
-                        .replace("[DIR_FW]", dir_fw).replace("[DIR_BK]", dir_bk)\
-                        .replace("[OFFSET_MM]", offset)
+            # if "axis" config key exists, we have a jog instruction so form the gcode
+            try:
+                axis = self.config[key_prefix + "axis"]
+                direction = self.config[key_prefix + "dir"]
+                jog_unit = str(msg[2])
 
-                    self.send_gcode(gcode)
+                # Jog Size is maintained here in the Pendant app, not by the message from the client
+                # jog_size = self.config["jog_size_" + str(msg[3])]
+                # self.log("jog_size_index " + str(self.jog_size_index), LogTypes.JOG)
+                jog_size = self.config["btn_" + str(self.jog_size_index) + "_size"]
+                self.log("button " + str(msg[1]) + " - jog [" + axis + direction + "] [" + jog_unit + "] [" +
+                         jog_size + "]", LogTypes.MSG)
 
-                except KeyError:
-                    pass
+                gcode = self.config["jog_gcode_pattern"].replace("[JOG_UNIT]", jog_unit)\
+                    .replace("[JOG_AXIS]", axis).replace("[JOG_DIR]", direction).replace("[JOG_SIZE]", jog_size)
 
-                # if "size" config key exists, we have a JOG_SIZE button
-                try:
-                    new_size = self.config[key_prefix + "size"]
-                    self.log("button " + str(msg[1]) + "- jog_size [" + new_size + "]", LogTypes.MSG)
+                self.send_gcode(gcode)
 
-                    # we don't send the size value, we send the size selector index
-                    self.set_jog_size(msg[1])
-                except KeyError:
-                    pass
-
-                # if "gcode" config key exists, we have straight gcode to send
-                try:
-                    gcode = self.config[key_prefix + "gcode"]
-                    self.log("button " + str(msg[1]) + " - gcode [" + gcode + "]", LogTypes.MSG)
-                    self.send_gcode(gcode)
-                except KeyError:
-                    pass
-
-                # if "axis" config key exists, we have a jog instruction so form the gcode
-                try:
-                    axis = self.config[key_prefix + "axis"]
-                    direction = self.config[key_prefix + "dir"]
-                    jog_unit = str(msg[2])
-
-                    # Jog Size is maintained here in the Pendant app, not by the message from the client
-                    # jog_size = self.config["jog_size_" + str(msg[3])]
-                    # self.log("jog_size_index " + str(self.jog_size_index), LogTypes.JOG)
-                    jog_size = self.config["btn_" + str(self.jog_size_index) + "_size"]
-                    self.log("button " + str(msg[1]) + " - jog [" + axis + direction + "] [" + jog_unit + "] [" +
-                             jog_size + "]", LogTypes.MSG)
-
-                    gcode = self.config["jog_gcode_pattern"].replace("[JOG_UNIT]", jog_unit)\
-                        .replace("[JOG_AXIS]", axis).replace("[JOG_DIR]", direction).replace("[JOG_SIZE]", jog_size)
-
-                    self.send_gcode(gcode)
-
-                except KeyError:
-                    pass
-
-            if self.alive:
-                if debug:
-                    self.log("thread_msg - going to sleep")
-                self.msg_lock.wait(int(self.config["ctl_thread_sleep_sec"]))
-                if debug:
-                    self.log("thread_msg - waking up")
-
-        self.msg_lock.release()
+            except KeyError:
+                pass
 
     def send_gcode(self, gcode):
         """
@@ -824,10 +651,12 @@ class Pendant:
 
 class PendantGui(Pendant):
     def __init__(self, config=None):
-        Pendant.__init__(self, config)
+        Pendant.__init__(self, config=config)
         self.main_window = PendantMainWindow(pendant=self)
-        self.log_object = ConsoleFrame(title=self.config["gui_frame_log_title"], pendant=self)
-        self.gcode_log = ConsoleFrame(title=self.config["gui_frame_gcode_title"], pendant=self)
+        self.log_object = ConsoleFrame(title=self.config["gui_frame_log_title"])
+        self.gcode_log = ConsoleFrame(title=self.config["gui_frame_gcode_title"])
+        self.stdin_log = StdinFrame(title=self.config["gui_frame_stdin_title"])
+        self.stdin_log.add_stdin_line_subscriber(self.stdin_line_queue)
 
     def create_gui(self):
 
@@ -850,14 +679,20 @@ class PendantGui(Pendant):
         left_layout.addWidget(SerialConnectionWidget(pendant=self))
         left_layout.addWidget(sender_frame)
         left_layout.addWidget(self.gcode_log)
-        left_layout.addWidget(self.log_object)
+
+        # tabbed pane for system log and stdin
+        tabs = QTabWidget()
+        tabs.addTab(self.log_object, "System Log")
+        tabs.addTab(self.stdin_log, self.stdin_log.title)
+
+        left_layout.addWidget(tabs)
         left_frame.setLayout(left_layout)
 
         right_frame = QFrame()
         right_layout = QVBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(ProbeFrame(pendant=self))
-        right_layout.addWidget(NotifyFrame(pendant=self))
+        right_layout.addWidget(NotifyFrame(pendant=self, notify_manager=self.notify_manager))
         emu_frame = PendantEmulator(pendant=self)
         self.add_client_msg_receiver(emu_frame)
         right_layout.addWidget(emu_frame)
@@ -898,18 +733,31 @@ class PendantMainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication([])
+    app = QApplication(sys.argv)
 
     config_file = "pendant.ini"
+    email_config_file = "pendant-email.ini"
     if len(sys.argv) < 2:
         print("no config file specified, using default:", config_file)
     else:
         config_file = sys.argv[1]
         print("using config file:", config_file)
 
+    if len(sys.argv) < 3:
+        print("no email config file specified, using default:", email_config_file)
+    else:
+        email_config_file = sys.argv[2]
+        print("using email config file:", email_config_file)
+
     configuration = configparser.ConfigParser(allow_no_value=True)
     configuration.read(config_file)
     configuration = configuration["DEFAULT"]
+
+    email_config = configparser.ConfigParser(allow_no_value=True)
+    email_config.read(email_config_file)
+
+    for k, v in email_config.items("EMAIL"):
+        configuration[k] = v
 
     gui = PendantGui(config=configuration)
 

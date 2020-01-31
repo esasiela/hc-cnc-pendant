@@ -4,7 +4,8 @@ from PyQt5.QtCore import Qt, QObject, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QFrame, QLabel, QVBoxLayout
 from PyQt5.QtGui import QPainter, QRegion, QBrush, QColor, QPixmap
 
-from hc_cnc_pendant_2020 import ConsoleFrame, NotifyStates
+from hc_cnc_constants import NotifyStates
+from hc_cnc_console import ConsoleFrame
 
 
 class EmuLed(QWidget):
@@ -72,7 +73,8 @@ class EmuButton(QWidget):
 
 
 class EmuLedButton(EmuButton):
-    def __init__(self, parent=None, emu=None, color=(0, 0, 0), diameter=10, move_to=None, button_num=-1, color_off=(0, 0, 0)):
+    def __init__(self, parent=None, emu=None, color=(0, 0, 0), diameter=10, move_to=None, button_num=-1,\
+                 color_off=(0, 0, 0)):
         super(EmuLedButton, self).__init__(parent, emu, color, diameter, move_to, button_num)
         self.color_on = color
         self.color_off = color_off
@@ -132,7 +134,7 @@ class PendantEmulator(QFrame):
         QFrame.__init__(self, parent)
         self.pendant = pendant
 
-        self.log_console = ConsoleFrame(title="Emu Log", pendant=self.pendant, show_border=False)
+        self.log_console = ConsoleFrame(title="Emu Log", show_border=False)
 
         self.notify_fired_thread = None
         self.notify_lock = threading.Condition()
@@ -271,7 +273,7 @@ class PendantEmulator(QFrame):
                 self.notify_fired_thread.start()
 
     def thread_notify_fired(self, debug=False):
-        while self.pendant.alive and self.pendant.notify_state == NotifyStates.FIRED:
+        while self.pendant.alive and self.pendant.notify_manager.notify_state == NotifyStates.FIRED:
             self.notify_lock.acquire()
 
             # emit a signal to toggle the LED
