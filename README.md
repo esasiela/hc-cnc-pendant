@@ -1,20 +1,22 @@
 # hc-cnc-pendant
 
-This repository is for the software required to run an Arduino-based CNC Pendant and the host software bridge that connects the pendant to a Gcode sender with a web user interface.
+This repository is for the software required to run an Arduino-based CNC Pendant and the Python software bridge that connects the pendant to a Gcode sender.
 
 ## HC CNC Pendant 2020
 
-As of January 2020, the project is under major overhaul.  The prototype completed pilot testing, and the production model is in progress.
+As of January 2020, the project completed a major overhaul.  The prototype is retired having completed pilot testing, and the production model is LIVE.
 
-There are a few interim commits pushed to github at key milestones of functional progress, before the docs (this README and the companion site at [Hedge Court](https://www.hedgecourt.com/robots/cncPendant/)) are updated.
+The full journey is documented in full photographic glory at [Hedge Court](https://www.hedgecourt.com/robots/cncPendant/).
+
+The source tree in this repository is divided into the production and prototype trees, since they are total rewrites rather than incremental modifications.
 
 The 2020 revision includes:
 
-* Host pendant application rewritten in Python.
+* Host pendant application rewritten in Python.  
 
 * State information (jog size and units) stored in host application, opening the door to multiple client devices/emulators.
 
-* Built-in pendant emulator, allowing the user to enter any commands that the hardware pendant device supports.
+* Built-in pendant emulator, allowing the user a GUI to enter any commands that the hardware pendant device supports.
 
 * Hardware client pendant in beautifully crafted wood enclosure, containing custom manufactured PCB holding an Arduino Nano controller.
 

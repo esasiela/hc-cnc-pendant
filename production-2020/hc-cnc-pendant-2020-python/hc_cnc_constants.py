@@ -1,29 +1,18 @@
-# from enum import Enum, auto
-
-# TODO upgrade Python version on Raspberry Pi controller to get Enum support
-# class LogTypes(Enum):
-#    SYS = auto()
-#    DEBUG = auto()
-#    MSG = auto()
-#    GCODE = auto()
-#    JOG = auto()
-#    STOP = auto()
-#    PROBE = auto()
-#    NOTIFY = auto()
+from enum import Enum, IntEnum, auto
 
 
-class LogTypes:
-    SYS = 0
-    DEBUG = 2
-    MSG = 3
-    GCODE = 4
-    JOG = 5
-    STOP = 6
-    PROBE = 7
-    NOTIFY = 8
+class LogTypes(Enum):
+    SYS = auto()
+    DEBUG = auto()
+    MSG = auto()
+    GCODE = auto()
+    JOG = auto()
+    STOP = auto()
+    PROBE = auto()
+    NOTIFY = auto()
 
 
-class NotifyStates:
+class NotifyStates(IntEnum):
     """
     Use byte value constants for comparison to serial byte coming from the device
     """
@@ -32,6 +21,6 @@ class NotifyStates:
     FIRED = 0x03
 
 
-class JobStates:
-    IDLE = 0
-    RUNNING = 1
+class JobStates(Enum):
+    IDLE = auto()
+    RUNNING = auto()

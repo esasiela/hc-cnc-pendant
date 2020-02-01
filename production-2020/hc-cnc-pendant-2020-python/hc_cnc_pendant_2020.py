@@ -373,10 +373,10 @@ class Pendant(ThreadedObserver):
             if debug:
                 self.log("stdin [" + line + "]")
             # parse the line, expecting it is bCNC output
-            if line == self.config[self.gcode_sender_name + "_stdin_start"]: #Controller state changed to: Run (Running: True)":
+            if line == self.config[self.gcode_sender_name + "_stdin_start"]:
                 self.log("gcode job started", stamp=True)
                 self.notify_manager.set_job_state(JobStates.RUNNING)
-            elif line == self.config[self.gcode_sender_name + "_stdin_stop"]: #Controller state changed to: Idle (Running: False)":
+            elif line == self.config[self.gcode_sender_name + "_stdin_stop"]:
                 self.notify_manager.set_job_state(JobStates.IDLE)
                 self.log("gcode job ended", stamp=True)
 
