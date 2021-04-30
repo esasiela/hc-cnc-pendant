@@ -6,4 +6,4 @@ PyQt5-sip==12.7.0
 PyQt5-stubs==5.13.1.4
 pyserial==3.4
 requests==2.22.0
-urllib3==1.25.7
+urllib3==1.25.8
